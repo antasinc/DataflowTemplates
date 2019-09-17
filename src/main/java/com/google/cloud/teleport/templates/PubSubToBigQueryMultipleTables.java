@@ -127,7 +127,7 @@ import org.slf4j.LoggerFactory;
  * --zone=us-east1-d \
  * --parameters \
  * "inputTopic=projects/${PROJECT_ID}/topics/input-topic-name,\
- * outputTableSpec=${PROJECT_ID}:dataset-id.output-table,\
+ * outputDataset=${PROJECT_ID}:dataset-id,\
  * outputDeadletterTable=${PROJECT_ID}:dataset-id.deadletter-table"
  *
  * # Execute a pipeline to read from a Subscription.
@@ -136,7 +136,7 @@ import org.slf4j.LoggerFactory;
  * --zone=us-east1-d \
  * --parameters \
  * "inputSubscription=projects/${PROJECT_ID}/subscriptions/input-subscription-name,\
- * outputTableSpec=${PROJECT_ID}:dataset-id.output-table,\
+ * outputDataset=${PROJECT_ID}:dataset-id,\
  * outputDeadletterTable=${PROJECT_ID}:dataset-id.deadletter-table"
  * </pre>
  */
@@ -167,15 +167,11 @@ public class PubSubToBigQueryMultipleTables {
   public static final TupleTag<FailsafeElement<PubsubMessage, String>> TRANSFORM_DEADLETTER_OUT = new TupleTag<FailsafeElement<PubsubMessage, String>>() {
   };
 
-  /** The tag for the table name retrived from json */
-  @SuppressWarnings("serial")
-  public static final TupleTag<FailsafeElement<PubsubMessage, String>> TABLE_NAME_OUT = new TupleTag<FailsafeElement<PubsubMessage, String>>() {
-  };
-
   /**
    * The default suffix for error tables if dead letter table is not specified.
+   * CAUTION: DO NOT FORGET TO PLACE "." in front of table name.
    */
-  public static final String DEFAULT_DEADLETTER_TABLE_SUFFIX = "_error_records";
+  public static final String DEFAULT_DEADLETTER_TABLE_SUFFIX = ".error_records";
 
   /** Pubsub message/string coder for pipeline. */
   public static final FailsafeElementCoder<PubsubMessage, String> CODER = FailsafeElementCoder
@@ -191,9 +187,9 @@ public class PubSubToBigQueryMultipleTables {
    */
   public interface Options extends PipelineOptions, JavascriptTextTransformerOptions {
     @Description("Table spec to write the output to")
-    ValueProvider<String> getOutputTableSpec();
+    ValueProvider<String> getOutputDataset();
 
-    void setOutputTableSpec(ValueProvider<String> value);
+    void setOutputDataset(ValueProvider<String> value);
 
     @Description("Pub/Sub topic to read the input from")
     ValueProvider<String> getInputTopic();
@@ -261,7 +257,6 @@ public class PubSubToBigQueryMultipleTables {
     /*
      * Step #1: Read messages in from Pub/Sub Either from a Subscription or Topic
      */
-
     PCollection<PubsubMessage> messages = null;
     if (options.getUseSubscription()) {
       messages = pipeline.apply("ReadPubSubSubscription",
@@ -282,10 +277,10 @@ public class PubSubToBigQueryMultipleTables {
      */
     WriteResult writeResult = convertedTableRows.get(TRANSFORM_OUT).apply("WriteSuccessfulRecords",
         BigQueryIO.writeTableRows().withoutValidation().withCreateDisposition(CreateDisposition.CREATE_NEVER)
-            .withWriteDisposition(WriteDisposition.WRITE_APPEND).withExtendedErrorInfo()
+            .withWriteDisposition(WriteDisposition.WRITE_APPEND)
+            .withExtendedErrorInfo()
             .withMethod(BigQueryIO.Write.Method.STREAMING_INSERTS)
-//            .withFailedInsertRetryPolicy(InsertRetryPolicy.retryTransientErrors())
-            .withFailedInsertRetryPolicy(InsertRetryPolicy.neverRetry())
+            .withFailedInsertRetryPolicy(InsertRetryPolicy.retryTransientErrors())
             // Change the target BQ table dynamically by the value associated to the field name (defined by TABLE_NAME_FIELD)
             // in a message from Pub/Sub
             .to(input -> new TableDestination((String) (input.getValue().get(TABLE_NAME_FIELD)), "Destination")));
@@ -309,37 +304,17 @@ public class PubSubToBigQueryMultipleTables {
         .apply("Flatten", Flatten.pCollections()).apply("WriteFailedRecords",
             ErrorConverters.WritePubsubMessageErrors.newBuilder()
                 .setErrorRecordsTable(ValueProviderUtils.maybeUseDefaultDeadletterTable(
-                    options.getOutputDeadletterTable(), options.getOutputTableSpec(), DEFAULT_DEADLETTER_TABLE_SUFFIX))
+                    options.getOutputDeadletterTable(), options.getOutputDataset(), DEFAULT_DEADLETTER_TABLE_SUFFIX))
                 .setErrorRecordsTableSchema(ResourceUtils.getDeadletterTableSchemaJson()).build());
 
     // 5) Insert records that failed insert into deadletter table
     failedInserts.apply("WriteFailedRecords",
         ErrorConverters.WriteStringMessageErrors.newBuilder()
             .setErrorRecordsTable(ValueProviderUtils.maybeUseDefaultDeadletterTable(options.getOutputDeadletterTable(),
-                options.getOutputTableSpec(), DEFAULT_DEADLETTER_TABLE_SUFFIX))
+                options.getOutputDataset(), DEFAULT_DEADLETTER_TABLE_SUFFIX))
             .setErrorRecordsTableSchema(ResourceUtils.getDeadletterTableSchemaJson()).build());
 
     return pipeline.run();
-  }
-
-  /**
-   * If deadletterTable is available, it is returned as is, otherwise
-   * outputTableSpec + defaultDeadLetterTableSuffix is returned instead.
-   */
-  private static ValueProvider<String> maybeUseDefaultDeadletterTable(ValueProvider<String> deadletterTable,
-      ValueProvider<String> outputTableSpec, String defaultDeadLetterTableSuffix) {
-    return DualInputNestedValueProvider.of(deadletterTable, outputTableSpec,
-        new SerializableFunction<TranslatorInput<String, String>, String>() {
-          @Override
-          public String apply(TranslatorInput<String, String> input) {
-            String userProvidedTable = input.getX();
-            String outputTableSpec = input.getY();
-            if (userProvidedTable == null) {
-              return outputTableSpec + defaultDeadLetterTableSuffix;
-            }
-            return userProvidedTable;
-          }
-        });
   }
 
   /**
@@ -463,6 +438,9 @@ public class PubSubToBigQueryMultipleTables {
             if (StringUtils.isBlank(tableName)) {
               context.output(failureTag(), FailsafeElement.of(element).setErrorMessage("No BigQuery table name field: " + TABLE_NAME_FIELD));
             } else {
+              if (!tableName.contains(".")) {
+                row.set(TABLE_NAME_FIELD, context.getPipelineOptions().as(Options.class).getOutputDataset() + "." + tableName);
+              }
               context.output(row);
             }
           } catch (Exception e) {
@@ -486,6 +464,7 @@ public class PubSubToBigQueryMultipleTables {
       TableRow row;
       // Parse the JSON into a {@link TableRow} object.
       try (InputStream inputStream = new ByteArrayInputStream(json.getBytes(StandardCharsets.UTF_8))) {
+        // FIXME: There is warning around `Context.OUTER` but the solution has not been found
         row = TableRowJsonCoder.of().decode(inputStream, Context.OUTER);
       } catch (IOException e) {
         throw new RuntimeException("Failed to serialize json to table row: " + json, e);
