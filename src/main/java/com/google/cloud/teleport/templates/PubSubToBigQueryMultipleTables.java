@@ -25,8 +25,6 @@ import com.google.cloud.teleport.coders.FailsafeElementCoder;
 import com.google.cloud.teleport.templates.common.ErrorConverters;
 import com.google.cloud.teleport.templates.common.JavascriptTextTransformer.FailsafeJavascriptUdf;
 import com.google.cloud.teleport.templates.common.JavascriptTextTransformer.JavascriptTextTransformerOptions;
-import com.google.cloud.teleport.util.DualInputNestedValueProvider;
-import com.google.cloud.teleport.util.DualInputNestedValueProvider.TranslatorInput;
 import com.google.cloud.teleport.util.ResourceUtils;
 import com.google.cloud.teleport.util.ValueProviderUtils;
 import com.google.cloud.teleport.values.FailsafeElement;
@@ -37,6 +35,8 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.regex.Pattern;
 
 import org.apache.beam.repackaged.core.org.apache.commons.lang3.StringUtils;
 import org.apache.beam.sdk.Pipeline;
@@ -59,6 +59,7 @@ import org.apache.beam.sdk.options.Default;
 import org.apache.beam.sdk.options.Description;
 import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.options.PipelineOptionsFactory;
+import org.apache.beam.sdk.options.Validation;
 import org.apache.beam.sdk.options.ValueProvider;
 import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.transforms.Flatten;
@@ -127,6 +128,7 @@ import org.slf4j.LoggerFactory;
  * --parameters \
  * "inputTopic=projects/${PROJECT_ID}/topics/input-topic-name,\
  * outputDataset=${PROJECT_ID}:dataset-id,\
+ * outputTables=table1|table2|table3,\
  * outputDeadletterTable=${PROJECT_ID}:dataset-id.deadletter-table"
  *
  * # Execute a pipeline to read from a Subscription.
@@ -136,6 +138,7 @@ import org.slf4j.LoggerFactory;
  * --parameters \
  * "inputSubscription=projects/${PROJECT_ID}/subscriptions/input-subscription-name,\
  * outputDataset=${PROJECT_ID}:dataset-id,\
+ * outputTables=table1|table2|table3,\
  * outputDeadletterTable=${PROJECT_ID}:dataset-id.deadletter-table"
  * </pre>
  */
@@ -185,10 +188,17 @@ public class PubSubToBigQueryMultipleTables {
    * executor at the command-line.
    */
   public interface Options extends PipelineOptions, JavascriptTextTransformerOptions {
-    @Description("Table spec to write the output to")
+    @Description("Dataset which owns the tables to write the output to")
+    @Validation.Required
     ValueProvider<String> getOutputDataset();
 
     void setOutputDataset(ValueProvider<String> value);
+
+    @Description("Tables to write the output to in the dataset, `|`-separated")
+    @Validation.Required
+    ValueProvider<String> getOutputTables();
+
+    void setOutputTables(ValueProvider<String> value);
 
     @Description("Pub/Sub topic to read the input from")
     ValueProvider<String> getInputTopic();
@@ -265,11 +275,10 @@ public class PubSubToBigQueryMultipleTables {
           PubsubIO.readMessagesWithAttributes().fromTopic(options.getInputTopic()));
     }
 
-    PCollectionTuple convertedTableRows = messages
-        /*
-         * Step #2: Transform the PubsubMessages into TableRows
-         */
-        .apply("ConvertMessageToTableRow", new PubsubMessageToTableRow(options));
+    /*
+     * Step #2: Transform the PubsubMessages into TableRows
+     */
+    PCollectionTuple convertedTableRows = messages.apply("ConvertMessageToTableRow", new PubsubMessageToTableRow(options));
 
     /*
      * Step #3: Write the successful records out to BigQuery
@@ -303,14 +312,16 @@ public class PubSubToBigQueryMultipleTables {
         .apply("Flatten", Flatten.pCollections()).apply("WriteFailedRecords",
             ErrorConverters.WritePubsubMessageErrors.newBuilder()
                 .setErrorRecordsTable(ValueProviderUtils.maybeUseDefaultDeadletterTable(
-                    options.getOutputDeadletterTable(), options.getOutputDataset(), DEFAULT_DEADLETTER_TABLE_SUFFIX))
+                    options.getOutputDeadletterTable(),
+                    options.getOutputDataset(), DEFAULT_DEADLETTER_TABLE_SUFFIX))
                 .setErrorRecordsTableSchema(ResourceUtils.getDeadletterTableSchemaJson()).build());
 
     // 5) Insert records that failed insert into deadletter table
     failedInserts.apply("WriteFailedRecords",
         ErrorConverters.WriteStringMessageErrors.newBuilder()
-            .setErrorRecordsTable(ValueProviderUtils.maybeUseDefaultDeadletterTable(options.getOutputDeadletterTable(),
-                options.getOutputDataset(), DEFAULT_DEADLETTER_TABLE_SUFFIX))
+            .setErrorRecordsTable(ValueProviderUtils.maybeUseDefaultDeadletterTable(
+              options.getOutputDeadletterTable(),
+              options.getOutputDataset(), DEFAULT_DEADLETTER_TABLE_SUFFIX))
             .setErrorRecordsTableSchema(ResourceUtils.getDeadletterTableSchemaJson()).build());
 
     return pipeline.run();
@@ -435,17 +446,32 @@ public class PubSubToBigQueryMultipleTables {
             TableRow row = convertJsonToTableRow(json);
             String tableName = (String)row.get(TABLE_NAME_FIELD);
             if (StringUtils.isBlank(tableName)) {
-              context.output(failureTag(), FailsafeElement.of(element).setErrorMessage("No BigQuery table name field: " + TABLE_NAME_FIELD));
-            } else {
-              if (!tableName.contains(".")) {
-                row.set(TABLE_NAME_FIELD, context.getPipelineOptions().as(Options.class).getOutputDataset() + "." + tableName);
-              }
-              context.output(row);
+              throw new RuntimeException("No BigQuery table name field: " + TABLE_NAME_FIELD);
             }
+            if (!tableName.contains(".")) {
+              tableName = context.getPipelineOptions().as(Options.class).getOutputDataset() + "." + tableName;
+            }
+
+            if (!isAllowedTable(context, tableName)) {
+              throw new RuntimeException("Destination table is not allowed. check outputTables option: Is "
+                + tableName
+                + " in " + context.getPipelineOptions().as(Options.class).getOutputTables() + "?");
+            }
+
+            row.set(TABLE_NAME_FIELD, tableName);
+            context.output(row);
           } catch (Exception e) {
             context.output(failureTag(), FailsafeElement.of(element).setErrorMessage(e.getMessage())
                 .setStacktrace(Throwables.getStackTraceAsString(e)));
           }
+        }
+
+        private boolean isAllowedTable(ProcessContext context, String tableName) {
+          String[] splitted = tableName.split(Pattern.quote("."));
+          String plainTableName = splitted[splitted.length - 1];
+          String[] allowedTables = context.getPipelineOptions().as(Options.class).getOutputTables().get().split(Pattern.quote("|"));
+
+          return Arrays.asList(allowedTables).contains(plainTableName);
         }
       }).withOutputTags(successTag(), TupleTagList.of(failureTag())));
     }
