@@ -30,20 +30,18 @@ import com.google.cloud.teleport.util.ValueProviderUtils;
 import com.google.cloud.teleport.values.FailsafeElement;
 import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
-
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.regex.Pattern;
-
 import org.apache.beam.repackaged.core.org.apache.commons.lang3.StringUtils;
 import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.PipelineResult;
+import org.apache.beam.sdk.coders.Coder.Context;
 import org.apache.beam.sdk.coders.CoderRegistry;
 import org.apache.beam.sdk.coders.StringUtf8Coder;
-import org.apache.beam.sdk.coders.Coder.Context;
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryIO;
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryIO.Write.CreateDisposition;
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryIO.Write.WriteDisposition;
@@ -147,7 +145,7 @@ public class PubSubToBigQueryMultipleTables {
   /** The log to output status messages to. */
   private static final Logger LOG = LoggerFactory.getLogger(PubSubToBigQueryMultipleTables.class);
 
-  /** table_name field in Pub/Sub message */
+  /** table_name field in Pub/Sub message. */
   private static final String TABLE_NAME_FIELD = "bq_table";
 
   /** The tag for the main output for the UDF. */
@@ -432,7 +430,7 @@ public class PubSubToBigQueryMultipleTables {
     }
 
     /**
-     * Modified for the BigQuery table name check from original
+     * Modified for the BigQuery table name check from original.
      */
     @Override
     public PCollectionTuple expand(PCollection<FailsafeElement<T, String>> failsafeElements) {

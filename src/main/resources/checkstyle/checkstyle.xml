@@ -133,6 +133,7 @@ page at http://checkstyle.sourceforge.net/config.html -->
     </module>
 
     <module name="JavadocStyle">
+      <property name="checkFirstSentence" value="false"/>
       <property name="severity" value="error"/>
       <property name="checkHtml" value="true"/>
     </module>
