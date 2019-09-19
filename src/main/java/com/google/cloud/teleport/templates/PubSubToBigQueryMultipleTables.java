@@ -495,6 +495,5 @@ public class PubSubToBigQueryMultipleTables {
 
       return row;
     }
-
   }
 }
