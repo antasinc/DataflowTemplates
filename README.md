@@ -1,5 +1,9 @@
 # Google Cloud Dataflow Template Pipelines
 
+**This branch includes the support of  multiple table output to BQ tables(PubSubToBigQueryMultipleTables)**
+
+This is the forked repo from https://github.com/GoogleCloudPlatform/DataflowTemplates
+
 These Dataflow templates are an effort to solve simple, but large, in-Cloud data
 tasks, including data import/export/backup/restore and bulk API operations,
 without a development environment. The technology under the hood which makes
@@ -33,6 +37,7 @@ their functionality.
 * [GCS Text to Pub/Sub (Streaming)](src/main/java/com/google/cloud/teleport/templates/TextToPubsubStream.java)
 * [Jdbc to BigQuery](src/main/java/com/google/cloud/teleport/templates/JdbcToBigQuery.java)
 * [Pub/Sub to BigQuery](src/main/java/com/google/cloud/teleport/templates/PubSubToBigQuery.java) *
+* [Pub/Sub to BigQuery(Multiple Tables)](src/main/java/com/google/cloud/teleport/templates/PubSubToBigQueryMultipleTables.java) *
 * [Pub/Sub to Datastore](src/main/java/com/google/cloud/teleport/templates/PubsubToDatastore.java) *
 * [Pub/Sub to GCS Avro](src/main/java/com/google/cloud/teleport/templates/PubsubToAvro.java)
 * [Pub/Sub to GCS Text](src/main/java/com/google/cloud/teleport/templates/PubsubToText.java)
@@ -69,18 +74,8 @@ using a maven command which builds the project and stages the template
 file on Google Cloud Storage. Any parameters passed at template build
 time will not be able to be overwritten at execution time.
 
-```sh
-mvn compile exec:java \
--Dexec.mainClass=com.google.cloud.teleport.templates.<template-class> \
--Dexec.cleanupDaemonThreads=false \
--Dexec.args=" \
---project=<project-id> \
---stagingLocation=gs://<bucket-name>/staging \
---tempLocation=gs://<bucket-name>/temp \
---templateLocation=gs://<bucket-name>/templates/<template-name>.json \
---runner=DataflowRunner"
-```
-
+For the practical command line, SEE the COMMENT in `src/main/java/com/google/cloud/teleport/templates/PubSubToBigQueryMultipleTables.java`
+[Pub/Sub to BigQuery(Multiple Tables)](src/main/java/com/google/cloud/teleport/templates/PubSubToBigQueryMultipleTables.java)
 
 ### Executing a Template File
 
@@ -90,13 +85,17 @@ executed using the
 tool. The runtime parameters required by the template can be passed in the
 parameters field via comma-separated list of `paramName=Value`.
 
-```sh
-gcloud dataflow jobs run <job-name> \
---gcs-location=<template-location> \
---zone=<zone> \
---parameters <parameters>
-```
+For practical command line, SEE the COMMENT in `src/main/java/com/google/cloud/teleport/templates/PubSubToBigQueryMultipleTables.java`
+[Pub/Sub to BigQuery(Multiple Tables)](src/main/java/com/google/cloud/teleport/templates/PubSubToBigQueryMultipleTables.java)
 
+### TEST
+
+Test is supported only for PubSubToBigQueryMultipleTables class.
+
+
+```sh
+mvn test -Dtest=PubsubToBigQueryMultipleTablesTest
+```
 
 ## Using UDFs
 
